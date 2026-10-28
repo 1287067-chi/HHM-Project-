@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,7 +8,6 @@ from datetime import datetime
 import io
 import re
 from sklearn.metrics import r2_score, mean_absolute_error
-from scipy.misc import derivative
 
 # ReportLab Imports
 from reportlab.lib.pagesizes import letter
@@ -121,11 +121,6 @@ END_YEAR = CURRENT_YEAR - 1
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_world_bank_data(country_code, indicator_code):
-    """
-    Fetches official historical data from World Bank API v2.
-    Strictly requests (CURRENT_YEAR - 70) to (CURRENT_YEAR - 1).
-    Does NOT substitute fake data on failure.
-    """
     url = f"http://api.worldbank.org/v2/country/{country_code}/indicator/{indicator_code}"
     params = {
         "date": f"{START_YEAR}:{END_YEAR}",
@@ -255,23 +250,19 @@ working_df = pd.DataFrame()
 if edited_data_input is not None and not edited_data_input.empty:
     temp_df = edited_data_input.copy()
     
-    # Check nulls
     if temp_df["Year"].isnull().any() or temp_df["Value"].isnull().any():
         validation_errors.append("Table contains null or unassigned Year/Value rows.")
     
-    # Numeric conversion
     try:
         temp_df["Year"] = temp_df["Year"].astype(int)
         temp_df["Value"] = temp_df["Value"].astype(float)
     except Exception:
         validation_errors.append("Year must be integer and Value must be numeric.")
     
-    # Duplicates
     if temp_df["Year"].duplicated().any():
         dups = temp_df["Year"][temp_df["Year"].duplicated()].unique()
         validation_errors.append(f"Duplicate years detected: {list(dups)}")
     
-    # Indicator range constraints
     min_val, max_val = ind_meta["min"], ind_meta["max"]
     invalid_range = temp_df[(temp_df["Value"] < min_val) | (temp_df["Value"] > max_val)]
     if not invalid_range.empty:
@@ -296,23 +287,19 @@ if len(working_df) < (poly_degree + 1):
     st.error(f"Insufficient data to fit degree {poly_degree} polynomial. Requires at least {poly_degree + 1} distinct observation years, but only {len(working_df)} available.")
     st.stop()
 
-# Centered time transformation: t = year - base_year
 base_year = int(working_df["Year"].min())
 years = working_df["Year"].values
 values = working_df["Value"].values
 t_obs = years - base_year
 
-# Polynomial fit on centered t
 coeffs = np.polyfit(t_obs, values, poly_degree)
 poly_func = np.poly1d(coeffs)
 
-# In-sample predictions
 y_pred_in = poly_func(t_obs)
 r2_in = r2_score(values, y_pred_in)
 mae_in = mean_absolute_error(values, y_pred_in)
 residuals = values - y_pred_in
 
-# Formatting Polynomial Equation String
 terms = []
 for idx, c in enumerate(coeffs):
     pwr = poly_degree - idx
@@ -324,7 +311,6 @@ for idx, c in enumerate(coeffs):
         terms.append(f"{c:+.4e}·t^{pwr}")
 eq_str = "y(t) = " + " ".join(terms) + f"  [where t = Year - {base_year}]"
 
-# Holdout validation (Chronological Split: last 20% if >= 10 points)
 holdout_text = "N/A (Requires >= 10 points)"
 if len(working_df) >= 10:
     split_idx = int(len(working_df) * 0.8)
@@ -341,7 +327,6 @@ if len(working_df) >= 10:
     mae_holdout = mean_absolute_error(test_df["Value"].values, te_pred)
     holdout_text = f"Out-of-Sample Holdout R²: {r2_holdout:.4f} | Holdout MAE: {mae_holdout:.4f}"
 
-# Metric Displays
 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
 col_m1.metric("In-Sample R² Score", f"{r2_in:.4f}")
 col_m2.metric("In-Sample MAE", f"{mae_in:.4f} {ind_meta['units']}")
@@ -402,7 +387,6 @@ def compute_estimates(year_list):
         t_val = yr - base_year
         est = float(poly_func(t_val))
         
-        # Classification
         if yr in working_df["Year"].values:
             classification = "Observed Historical Year"
             actual_val = working_df[working_df["Year"] == yr]["Value"].values[0]
@@ -413,7 +397,6 @@ def compute_estimates(year_list):
             classification = "Out-of-Sample Extrapolation"
             actual_val = np.nan
             
-        # Implausibility Flag
         implausible = False
         if est < ind_meta["min"] or est > ind_meta["max"]:
             implausible = True
@@ -438,7 +421,6 @@ if st.session_state.calculated_results is not None:
     st.subheader("Calculation Engine Output")
     st.dataframe(st.session_state.calculated_results, use_container_width=True)
     
-    # Plausibility Warnings
     implausibles = st.session_state.calculated_results[st.session_state.calculated_results["Extrapolation Flag"] != "Normal"]
     if not implausibles.empty:
         st.error("⚠️ **Polynomial Extrapolation Warning**: The mathematical curve produces values outside physical/indicator domain bounds. Polynomial predictions outside the observed period diverge rapidly and should be treated with caution.")
@@ -465,14 +447,13 @@ with curric_tab1:
 
 with curric_tab2:
     st.subheader("Precalculus Structural Analysis")
-    # Turning points via derivative roots
     d1 = np.polyder(poly_func)
     r_d1 = np.roots(d1)
     real_turning = [r + base_year for r in r_d1 if np.isreal(r) and (0 <= r <= (working_df['Year'].max() - base_year))]
     
     st.markdown(f"""
     - **Polynomial Degree Effect**: Degree $d = {poly_degree}$ allows up to $d-1 = {poly_degree-1}$ local turning points and at most $d-2 = {poly_degree-2}$ inflection points.
-    - **Turning Points in Observed Domain**: Detected at years: `{ [round(x, 1) for x in real_turning] if real_turning else 'None in observed range' }`.
+    - **Turning Points in Observed Domain**: Detected at years: `{ [round(float(x.real), 1) for x in real_turning] if real_turning else 'None in observed range' }`.
     - **Concavity Dynamics**: Changing average rates of change demonstrate local concavity shifts across historical intervals.
     """)
 
@@ -486,13 +467,13 @@ with curric_tab3:
     
     crit_info = []
     for r in real_crit:
-        yr_val = r + base_year
-        d2_val = d2_func(r)
+        yr_val = float(r.real) + base_year
+        d2_val = float(d2_func(r.real))
         c_type = "Local Minimum" if d2_val > 0 else ("Local Maximum" if d2_val < 0 else "Inconclusive")
         crit_info.append(f"Year {yr_val:.1f}: {c_type} (f''(t) = {d2_val:.3e})")
         
     inflect_t = np.roots(d2_func)
-    real_inflect = [r + base_year for r in inflect_t if np.isreal(r) and (0 <= r <= (working_df['Year'].max() - base_year))]
+    real_inflect = [float(r.real) + base_year for r in inflect_t if np.isreal(r) and (0 <= r <= (working_df['Year'].max() - base_year))]
     
     st.markdown(f"""
     - **First Derivative $y'(t)$**: Describes instantaneous rate of change of {ind_meta['name']}.
@@ -511,30 +492,24 @@ st.header("📉 Data Visualization & Comparison")
 
 fig, ax = plt.subplots(figsize=(10, 5))
 
-# Graph Sample Increment Filtering
 sample_df = working_df.iloc[::sample_step]
 
-# Plot Observed Data
 ax.scatter(sample_df["Year"], sample_df["Value"], color="navy", label=f"Observed Sample (Step={sample_step}yr)", zorder=3)
 ax.plot(working_df["Year"], working_df["Value"], color="blue", alpha=0.3, linestyle="--", label="Historical Path")
 
-# Continuous Curve Generation
 full_years = np.linspace(working_df["Year"].min(), working_df["Year"].max() + forecast_horizon, 300)
 full_t = full_years - base_year
 full_pred = poly_func(full_t)
 
-# Historical vs Forecast split
 hist_mask = full_years <= working_df["Year"].max()
 ax.plot(full_years[hist_mask], full_pred[hist_mask], color="darkgreen", linewidth=2, label=f"Fitted Poly (deg={poly_degree})")
 if forecast_horizon > 0:
     ax.plot(full_years[~hist_mask], full_pred[~hist_mask], color="red", linestyle=":", linewidth=2, label="Extrapolated Forecast")
 
-# Plot Single/Batch Calculation Markers
 if st.session_state.calculated_results is not None:
     calc_df = st.session_state.calculated_results
     ax.scatter(calc_df["Year"], calc_df["Fitted Value Estimate"], color="crimson", marker="X", s=100, label="Calculated Points", zorder=5)
 
-# Comparison Country Overlay
 if comparison_country != "None":
     comp_df, _, _ = fetch_world_bank_data(comparison_country, selected_indicator)
     if not comp_df.empty:
@@ -542,7 +517,6 @@ if comparison_country != "None":
     else:
         st.warning(f"No comparison data available for {comparison_country}.")
 
-# Formatting Chart
 ax.axvline(working_df["Year"].max(), color="gray", linestyle="--", alpha=0.7, label="Historical Boundary")
 ax.set_title(f"{ind_meta['name']} Trend - {COUNTRY_MAP[selected_country]}", fontsize=12)
 ax.set_xlabel("Year")
@@ -577,7 +551,6 @@ col_ex1.download_button(
 # 2. EXCEL EXPORT (.xlsx via XlsxWriter)
 excel_buffer = io.BytesIO()
 with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
-    # Summary Sheet
     summary_df = pd.DataFrame([
         {"Metric": "Author", "Value": APP_AUTHOR},
         {"Metric": "Country", "Value": COUNTRY_MAP[selected_country]},
@@ -590,11 +563,7 @@ with pd.ExcelWriter(excel_buffer, engine="xlsxwriter") as writer:
         {"Metric": "User Modified Data Flag", "Value": st.session_state.is_modified}
     ])
     summary_df.to_excel(writer, sheet_name="Summary", index=False)
-    
-    # Working Data
     working_df.to_excel(writer, sheet_name="Working Data", index=False)
-    
-    # Calculated Results
     if st.session_state.calculated_results is not None:
         st.session_state.calculated_results.to_excel(writer, sheet_name="Calculated Results", index=False)
 
@@ -616,12 +585,10 @@ def generate_pdf_report():
     h2_style = ParagraphStyle('H2Style', parent=styles['Heading2'], fontSize=12, leading=16, textColor=colors.HexColor('#1E3A8A'))
     body_style = ParagraphStyle('BodyStyle', parent=styles['Normal'], fontSize=9, leading=12)
     
-    # Header
     story.append(Paragraph("Hispanic Heritage Historical Data Analysis Report", title_style))
     story.append(Paragraph(f"Author: {APP_AUTHOR} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", body_style))
     story.append(Spacer(1, 10))
     
-    # Metadata Table
     meta_data = [
         ["Country", COUNTRY_MAP[selected_country]],
         ["Indicator", f"{ind_meta['name']} ({selected_indicator})"],
@@ -641,19 +608,16 @@ def generate_pdf_report():
     story.append(t_meta)
     story.append(Spacer(1, 10))
     
-    # Equation
     story.append(Paragraph("Fitted Model Equation", h2_style))
     story.append(Paragraph(f"<font fontName='Courier'>{eq_str}</font>", body_style))
     story.append(Spacer(1, 10))
     
-    # Chart Image
     img_buf = io.BytesIO()
     fig.savefig(img_buf, format='png', dpi=150, bbox_inches='tight')
     img_buf.seek(0)
     story.append(RLImage(img_buf, width=500, height=250))
     story.append(Spacer(1, 10))
     
-    # Methodology & Findings
     story.append(Paragraph("Findings & Modeling Limitations", h2_style))
     limitations_text = (
         "<b>Model Uncertainty & Limitations:</b> High-degree polynomial regression is subject to severe edge-effects "
@@ -663,10 +627,9 @@ def generate_pdf_report():
     story.append(Paragraph(limitations_text, body_style))
     story.append(Spacer(1, 10))
     
-    # Calculated Results Table if available
     if st.session_state.calculated_results is not None:
         story.append(Paragraph("Calculated Output Predictions", h2_style))
-        calc_df = st.session_state.calculated_results.head(10) # limit to top 10 for PDF view
+        calc_df = st.session_state.calculated_results.head(10)
         calc_data = [["Year", "Estimate", "Units", "Classification"]]
         for _, row in calc_df.iterrows():
             calc_data.append([str(row["Year"]), f"{row['Fitted Value Estimate']:.2f}", str(row["Units"]), str(row["Domain Classification"])])
